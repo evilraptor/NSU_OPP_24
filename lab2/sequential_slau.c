@@ -1,13 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#include <mpi.h>
 #include <string.h>
 
 // XXX
-#define N 1000//35000
+#define N 100//35000
 
-#define MAXITER 10//15000
+#define MAXITER 15000
 #define SETVALVARIENT 1
 #define SEQTIME 106
 
@@ -109,11 +108,15 @@ void set_values(double *A, double *u, double *x, double *b, int out_put_flag) {
 		multiply_matrix_and_vector(A, N, u, b, 0);
 	} else if (SETVALVARIENT == 3) {
 		for (int i = 0; i < N; i++) {
-			u[i] = sin(2 * M_PI * i / N);
-			x[i] = rand();
-			b[i] = N+1;
+			for (int j = 0; j < N; j++) {
+				A[j*N +i] = (i == j ? i : N);
+			}
 		}
-		multiply_matrix_and_vector(A, N, u, b, 0);
+		for (int i = 0; i < N; i++) {
+			u[i] = 0.0;
+			x[i] = 0.0;
+			b[i] = i * i;
+		}
 	}
 
 	if(out_put_flag==1) 
@@ -123,90 +126,82 @@ void set_values(double *A, double *u, double *x, double *b, int out_put_flag) {
 /////////////////////////
 
 int main(int argc, char **argv) {
-	double start_time, end_time;
-	double eps = 1e-5, tau;
+	double start_time = 0.0, end_time = 0.0;
+	double eps = 1e-5, tau = 1e-3;
 	
 	double *A = NULL;
 	double *u = NULL;
 	double *x = (double *)malloc(N * sizeof(double));
 	double *b = (double *)malloc(N * sizeof(double));
-	double *y = NULL;
+	double *y = (double *)malloc(N * sizeof(double));
 	
-//		start_time = MPI_Wtime();
-		A = (double *)malloc(N * N * sizeof(double));
-		u = (double *)malloc(N * sizeof(double));
-		set_values(A, u, x, b, 0);
-		y = (double *)malloc(N * sizeof(double));
-		
+	//start_time = MPI_Wtime();
+	A = (double *)malloc(N * N * sizeof(double));
+	u = (double *)malloc(N * sizeof(double));
+	set_values(A, u, x, b, 0);
+	
 	double *Ax = (double *)malloc(N * sizeof(double));
 	for (int i = 0; i < N; i++) 
 		Ax[i] = 0.0;
-	double *temp_vector1 = (double *)malloc(N * sizeof(double));
 	double *temp_vector2 = (double *)malloc(N * sizeof(double));
 	
+	
+	for (int i = 0; i < N; i++) {
+		Ax[i] = 0.0;
+	}
+	
+	
+/////////////////////////////
 	int state = 1, counter = 0;
 	while (state) {
-		//AX
+		
+		//Ax 		
 		multiply_matrix_and_vector(A, N, x, Ax, 0);
-
-		//Ax-b->temp_vector1 (y)
+		//Ax-b-> y
 		minus_vectors(Ax, b, N, y, 0);
-
 		
-			//A*y->Ay (temp_vector2)			
-			multiply_matrix_and_vector(A, N, y, temp_vector2, 0);
+		//A*y->Ay (temp_vector2)			
+		multiply_matrix_and_vector(A, N, y, temp_vector2, 0);
 // XXX
-			//tau=(y,Ay)/(Ay,Ay)
-			if(dot_product(temp_vector2, temp_vector2, N) != 0) 
-				tau = dot_product(y, temp_vector2, N) / dot_product(temp_vector2, temp_vector2, N);
-			else {
-				tau = 1e-3;
-				printf("tau= /0\n");
-			}
-			
-			if (tau == 0) {
-				tau = 1e-3;
-				printf("tau=0\n");
-			}
-
+		//tau=(y,Ay)/(Ay,Ay)
+		tau = dot_product(y, temp_vector2, N) / dot_product(temp_vector2, temp_vector2, N);
 		
-		//tau*y -> temp_vector1 (y)
-		multiply_vector_and_scalar(y, N, tau, temp_vector1, 0);
+		//tau*y -> y
+		multiply_vector_and_scalar(y, N, tau, y, 0);
 		
-		//x-tau*y (temp_vector1)-> temp_vector1 (x)
-		minus_vectors(x, temp_vector1, N, x, 0);
+		//x-tau*y -> x
+		minus_vectors(x, y, N,x, 0);
 		
-		
-			multiply_matrix_and_vector(A, N, x, Ax, 0);
-			minus_vectors(Ax, b, N, temp_vector2, 0);
-			if (check_criteria(temp_vector2, b, eps)){
-				state = 0;
-				printf("\ndone in %d iterations\n",counter);	
-			}
-			if (counter == MAXITER - 1) {
-				printf("\niterations ended\n");
-			}
+//check		
+		multiply_matrix_and_vector(A, N, x, Ax, 0);
+		minus_vectors(Ax, b, N, temp_vector2, 0);
+		if (check_criteria(temp_vector2, b, eps)){
+			state = 0;
+			printf("\ndone in %d iterations\n",counter);	
+		}
+		if (counter == MAXITER - 1) {
+			printf("\niterations ended\n");
+		}
+	
 		
 		if (counter < MAXITER - 1) counter++;
 		else break;
-		
 	}
 	
-//		end_time = MPI_Wtime();
-		printf("time: %f\n",end_time-start_time);
-		if(argc>1){
-			char *tmp=argv[1];
-			if (strcmp(tmp,"1")==0){
-				print_vector(u,min(6,N),"u");
-				print_vector(x,min(6,N),"x");
-			}
+	//end_time = MPI_Wtime();
+	printf("time: %f\n",end_time-start_time);
+	if(argc>1){
+		char *tmp=argv[1];
+		if (strcmp(tmp,"1")==0){
+		if (SETVALVARIENT == 2) print_vector(u,min(6,N),"u");
+		print_vector(x,min(6,N),"x");
 		}
-		free(A);
-		free(u);
-
+	}
+	free(A);
+	free(u);
 	free(x);
 	free(b);
-	free(temp_vector1);
+	free(temp_vector2);
 	free(Ax);
 	
 	return 0;
