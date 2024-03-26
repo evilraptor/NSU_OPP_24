@@ -11,7 +11,6 @@
 #define MAXITER 30000
 #define SETVALVARIENT 3
 #define SEQTIME 106
-#define CHECKBYMPI 1
 
 void print_vector(double *vector, int count, char* name) {
 	printf("printing vector %s:\n",name);
@@ -192,7 +191,8 @@ int main(int argc, char **argv) {
 	double *cutted_b = (double *)malloc(divided_send_counts[rank] * sizeof(double));
 	double *cutted_x = (double *)malloc(divided_send_counts[rank] * sizeof(double));
 	double *cutted_y = (double *)malloc(divided_send_counts[rank] * sizeof(double));
-	double *temp_vector = (double *)malloc(N * sizeof(double));
+	double *temp_vector1 = (double *)malloc(N * sizeof(double));
+	double *temp_vector2 = (double *)malloc(N * sizeof(double));
 	
 	double *part_A = (double *)malloc(send_counts[rank] * sizeof(double));
 	MPI_Scatterv(A, send_counts, displs, MPI_DOUBLE, part_A, send_counts[rank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
@@ -202,7 +202,8 @@ int main(int argc, char **argv) {
 	cut_vector(b, cutted_b, divided_send_counts[rank], divided_displs[rank]);	
 	set_zero(local_Ax, divided_send_counts[rank]);
 	set_zero(cutted_y, divided_send_counts[rank]);
-	set_zero(temp_vector, N);
+	set_zero(temp_vector1, N);
+	set_zero(temp_vector2, N);
 	
 /////////////////////////////
 	int state = 1, counter = 0;
@@ -215,10 +216,10 @@ int main(int argc, char **argv) {
 		minus_vectors(local_Ax, cutted_b, divided_send_counts[rank], cutted_y, 0);
 		MPI_Allgatherv(cutted_y, divided_send_counts[rank], MPI_DOUBLE, y, divided_send_counts, divided_displs, MPI_DOUBLE, MPI_COMM_WORLD);		
 		
-		//A*y->Ay (temp_vector)
-		multiply_matrix_and_vector(part_A, divided_send_counts[rank], y, temp_vector, 0);
-		double local_dot_product1 = dot_product(cutted_y, temp_vector, divided_send_counts[rank]);
-		double local_dot_product2 = dot_product(temp_vector, temp_vector, divided_send_counts[rank]);
+		//A*y->Ay (temp_vector1)
+		multiply_matrix_and_vector(part_A, divided_send_counts[rank], y, temp_vector1, 0);
+		double local_dot_product1 = dot_product(cutted_y, temp_vector1, divided_send_counts[rank]);
+		double local_dot_product2 = dot_product(temp_vector1, temp_vector1, divided_send_counts[rank]);
 		MPI_Reduce(&local_dot_product1, &global_dot_product1, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 		MPI_Reduce(&local_dot_product2, &global_dot_product2, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 		if (rank == 0)
@@ -232,16 +233,12 @@ int main(int argc, char **argv) {
 		MPI_Allgatherv(cutted_x, divided_send_counts[rank], MPI_DOUBLE, x, divided_send_counts, divided_displs, MPI_DOUBLE, MPI_COMM_WORLD);
 
 /////////////////////////////
-		if (CHECKBYMPI == 0) {
-			multiply_matrix_and_vector(part_A, divided_send_counts[rank], x, local_Ax, 0);
-			minus_vectors(local_Ax, cutted_b, divided_send_counts[rank], temp_vector, 0);
-			
-			
-		} else if ((rank == 0) && (CHECKBYMPI == 1)) {
-			multiply_matrix_and_vector(A, N, x, Ax, 0);
-			minus_vectors(Ax, b, N, temp_vector, 0);
-			if (check_criterial(temp_vector, b, eps)) state = 0;
-		}
+
+		multiply_matrix_and_vector(part_A, divided_send_counts[rank], x, local_Ax, 0);
+		minus_vectors(local_Ax, cutted_b, divided_send_counts[rank], temp_vector1, 0);
+		MPI_Gather(temp_vector1, divided_send_counts[rank], MPI_DOUBLE, temp_vector2, divided_send_counts[rank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
+		if (rank == 0)
+			if (check_criterial(temp_vector2, b, eps)) state = 0;
 		MPI_Bcast(&state, 1, MPI_INT, 0, MPI_COMM_WORLD);
 		counter++;
 	}
@@ -276,7 +273,8 @@ int main(int argc, char **argv) {
 	free(cutted_x);
 	free(cutted_y);
 	free(y);
-	free(temp_vector);
+	free(temp_vector1);
+	free(temp_vector2);
 	
 	MPI_Finalize();
 	return 0;
