@@ -7,9 +7,11 @@
 // XXX
 #define N 100//35000
 
-#define MAXITER 15000
+//или сделать переменными окружения...
+#define MAXITER 30000
 #define SETVALVARIENT 3
 #define SEQTIME 106
+#define CHECKBYMPI 1
 
 void print_vector(double *vector, int count, char* name) {
 	printf("printing vector %s:\n",name);
@@ -81,7 +83,7 @@ int min(int a, int b) {
 	return a < b ? a : b;
 }
 
-int check_criteria(double *vector1, double *vector2, double eps) {
+int check_criterial(double *vector1, double *vector2, double eps) {
 	if ((get_norm(vector1) / get_norm(vector2)) < eps) return 1;
 	return 0;
 }
@@ -114,7 +116,7 @@ void set_values(double *A, double *u, double *x, double *b, int out_put_flag) {
 			}
 		}
 		for (int i = 0; i < N; i++) {
-			u[i] = 0.0;//sin(2 * M_PI * i / N);
+			u[i] = 0.0;
 			x[i] = 0.0;
 			b[i] = i * i;
 		}
@@ -146,12 +148,18 @@ void set_displs(int *send_counts, int *displs, int *divided_displs, int size) {
 		divided_displs[i]= displs[i] / N;
 }
 
+void set_zero(double *array, int size) {
+	for (int i = 0; i < size; i++) {
+		array[i] = 0.0;
+	}
+}
 /////////////////////////
 
 int main(int argc, char **argv) {
 	int rank, size;
 	double start_time = 0.0, end_time = 0.0;
 	double eps = 1e-5, tau = 1e-3;
+	double global_dot_product1 = 0.0, global_dot_product2 = 0.0;
 	
 	MPI_Init(&argc, &argv);
 	MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -164,6 +172,7 @@ int main(int argc, char **argv) {
 	
 	double *A = NULL;
 	double *u = NULL;
+	double *Ax = NULL;
 	double *x = (double *)malloc(N * sizeof(double));
 	double *b = (double *)malloc(N * sizeof(double));
 	double *y = (double *)malloc(N * sizeof(double));
@@ -171,73 +180,70 @@ int main(int argc, char **argv) {
 	if(rank == 0){
 		start_time = MPI_Wtime();
 		A = (double *)malloc(N * N * sizeof(double));
+		Ax = (double *)malloc(N * sizeof(double));
 		u = (double *)malloc(N * sizeof(double));
 		set_values(A, u, x, b, 0);
+		set_zero(Ax, N);
 	}
 	set_sending_counts(send_counts, divided_send_counts, size);
 	set_displs(send_counts, displs, divided_displs, size);
 	
-	double *Ax = (double *)malloc(N * sizeof(double));
-	for (int i = 0; i < divided_send_counts[rank]; i++) 
-		Ax[i] = 0.0;
+	double *local_Ax = (double *)malloc(divided_send_counts[rank] * sizeof(double));
 	double *cutted_b = (double *)malloc(divided_send_counts[rank] * sizeof(double));
 	double *cutted_x = (double *)malloc(divided_send_counts[rank] * sizeof(double));
-	double *temp_vector1 = (double *)malloc(divided_send_counts[rank] * sizeof(double));
-	double *temp_vector2 = (double *)malloc(N * sizeof(double));
+	double *cutted_y = (double *)malloc(divided_send_counts[rank] * sizeof(double));
+	double *temp_vector = (double *)malloc(N * sizeof(double));
 	
 	double *part_A = (double *)malloc(send_counts[rank] * sizeof(double));
 	MPI_Scatterv(A, send_counts, displs, MPI_DOUBLE, part_A, send_counts[rank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
 	MPI_Bcast(b, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 	MPI_Bcast(x, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 	
-	for (int i = 0; i < divided_send_counts[rank]; i++) {
-		Ax[i] = 0.0;
-	}
 	cut_vector(b, cutted_b, divided_send_counts[rank], divided_displs[rank]);	
-	
+	set_zero(local_Ax, divided_send_counts[rank]);
+	set_zero(cutted_y, divided_send_counts[rank]);
+	set_zero(temp_vector, N);
 	
 /////////////////////////////
 	int state = 1, counter = 0;
 	while (state) {
 		cut_vector(x, cutted_x, divided_send_counts[rank], divided_displs[rank]);
 		
-		//Ax (temp_vector2)		
-		multiply_matrix_and_vector(part_A, divided_send_counts[rank], x, temp_vector2, 0);
-		//Ax-b->temp_vector1 (y)
-		minus_vectors(temp_vector2, cutted_b, divided_send_counts[rank], temp_vector1, 0);
-		MPI_Allgatherv(temp_vector1, divided_send_counts[rank], MPI_DOUBLE, y, divided_send_counts, divided_displs, MPI_DOUBLE, MPI_COMM_WORLD);		
-
-		//размерность не будет соответствовать и следует считать тау в 0ом	
-		if(rank == 0) {
-			//A*y->Ay (temp_vector2)			
-			multiply_matrix_and_vector(A, N, y, temp_vector2, 0);
-// XXX
-			//tau=(y,Ay)/(Ay,Ay)
-			tau = dot_product(y, temp_vector2, N) / dot_product(temp_vector2, temp_vector2, N);
-		}
+		//Ax		
+		multiply_matrix_and_vector(part_A, divided_send_counts[rank], x, local_Ax, 0);
+		//Ax-b->cutted_y
+		minus_vectors(local_Ax, cutted_b, divided_send_counts[rank], cutted_y, 0);
+		MPI_Allgatherv(cutted_y, divided_send_counts[rank], MPI_DOUBLE, y, divided_send_counts, divided_displs, MPI_DOUBLE, MPI_COMM_WORLD);		
+		
+		//A*y->Ay (temp_vector)
+		multiply_matrix_and_vector(part_A, divided_send_counts[rank], y, temp_vector, 0);
+		double local_dot_product1 = dot_product(cutted_y, temp_vector, divided_send_counts[rank]);
+		double local_dot_product2 = dot_product(temp_vector, temp_vector, divided_send_counts[rank]);
+		MPI_Reduce(&local_dot_product1, &global_dot_product1, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+		MPI_Reduce(&local_dot_product2, &global_dot_product2, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+		if (rank == 0)
+			tau = global_dot_product1 / global_dot_product2;
 		MPI_Bcast(&tau, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 		
-		//tau*y -> temp_vector1 (y)
-		multiply_vector_and_scalar(temp_vector1, divided_send_counts[rank], tau, temp_vector1, 0);
-		//x-tau*y (temp_vector1)-> temp_vector1 (x)
-		minus_vectors(cutted_x, temp_vector1, divided_send_counts[rank],temp_vector1, 0);
-		MPI_Allgatherv(temp_vector1, divided_send_counts[rank], MPI_DOUBLE, x, divided_send_counts, divided_displs, MPI_DOUBLE, MPI_COMM_WORLD);
+		//tau*y -> cutted_y
+		multiply_vector_and_scalar(cutted_y, divided_send_counts[rank], tau, cutted_y, 0);
+		//x-tau*y -> cutted_x
+		minus_vectors(cutted_x, cutted_y, divided_send_counts[rank],cutted_x, 0);
+		MPI_Allgatherv(cutted_x, divided_send_counts[rank], MPI_DOUBLE, x, divided_send_counts, divided_displs, MPI_DOUBLE, MPI_COMM_WORLD);
 
-		if (rank == 0) {
+/////////////////////////////
+		if (CHECKBYMPI == 0) {
+			multiply_matrix_and_vector(part_A, divided_send_counts[rank], x, local_Ax, 0);
+			minus_vectors(local_Ax, cutted_b, divided_send_counts[rank], temp_vector, 0);
+			
+			
+		} else if ((rank == 0) && (CHECKBYMPI == 1)) {
 			multiply_matrix_and_vector(A, N, x, Ax, 0);
-			minus_vectors(Ax, b, N, temp_vector2, 0);
-			if (check_criteria(temp_vector2, b, eps)){
-				state = 0;
-				printf("\ndone in %d iterations\n",counter);	
-			}
-			if (counter == MAXITER - 1) {
-				printf("\niterations ended\n");
-			}
+			minus_vectors(Ax, b, N, temp_vector, 0);
+			if (check_criterial(temp_vector, b, eps)) state = 0;
 		}
 		MPI_Bcast(&state, 1, MPI_INT, 0, MPI_COMM_WORLD);
-		
-		if (counter < MAXITER - 1) counter++;
-		else break;
+		counter++;
 	}
 /////////////////////////////
 	
@@ -247,6 +253,7 @@ int main(int argc, char **argv) {
 		printf("time: %f\n",end_time-start_time);
 		printf("Sp: %f\n", SEQTIME / (end_time - start_time));
 		printf("Ep: %f\n", (SEQTIME / (end_time - start_time) / size) * 100);
+		printf("iterations: %d\n",counter);
 		if(argc > 1){
 			char *tmp=argv[1];
 			if (strcmp(tmp,"1")==0){
@@ -256,6 +263,7 @@ int main(int argc, char **argv) {
 		}
 		free(A);
 		free(u);
+		free(Ax);
 	}
 	free(send_counts);
 	free(displs);
@@ -263,10 +271,12 @@ int main(int argc, char **argv) {
 	free(divided_displs);
 	free(x);
 	free(b);
-	free(temp_vector1);
-	free(Ax);
+	free(local_Ax);
 	free(cutted_b);
 	free(cutted_x);
+	free(cutted_y);
+	free(y);
+	free(temp_vector);
 	
 	MPI_Finalize();
 	return 0;
